@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  dog-med-tracker:
+    build: .
+    container_name: dog-med-tracker
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./relay/.env
+    volumes:
+      - dog-med-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  dog-med-data:
