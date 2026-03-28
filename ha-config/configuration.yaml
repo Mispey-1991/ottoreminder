@@ -1,0 +1,212 @@
+# ============================================================
+# DOG MEDICATION TRACKER — Home Assistant Configuration
+# ============================================================
+# Add these to your configuration.yaml (or split into packages)
+# Then set up the automations via the HA UI or automations.yaml
+# ============================================================
+
+# ── HELPERS ──────────────────────────────────────────────────
+# These track state. Add via Settings > Devices > Helpers, or paste below.
+
+input_boolean:
+  dog_medication_given:
+    name: Dog Medication Given
+    icon: mdi:pill
+
+input_text:
+  dog_medication_confirmed_by:
+    name: Dog Medication Confirmed By
+    max: 50
+    icon: mdi:account-check
+
+input_datetime:
+  dog_medication_confirmed_at:
+    name: Dog Medication Confirmed At
+    has_date: true
+    has_time: true
+    icon: mdi:clock-check
+
+# ── AUTOMATIONS ──────────────────────────────────────────────
+
+automation:
+
+  # 1) RESET daily at midnight
+  - id: dog_med_daily_reset
+    alias: "Dog Medication — Daily Reset"
+    trigger:
+      - platform: time
+        at: "00:00:00"
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.dog_medication_given
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.dog_medication_confirmed_by
+        data:
+          value: ""
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.dog_medication_confirmed_at
+        data:
+          datetime: "2000-01-01 00:00:00"
+
+  # 2) SEND persistent notifications — adjust times to your schedule
+  #    This fires at each reminder time IF meds haven't been given yet.
+  - id: dog_med_send_reminders
+    alias: "Dog Medication — Send Reminders"
+    trigger:
+      - platform: time
+        at: "08:00:00"
+      - platform: time
+        at: "12:00:00"
+      - platform: time
+        at: "17:00:00"
+    condition:
+      - condition: state
+        entity_id: input_boolean.dog_medication_given
+        state: "off"
+    action:
+      # Notify Phone 1 (persistent + actionable)
+      - service: notify.mobile_app_PHONE_1_NAME
+        data:
+          title: "🐕 Dog Medication Reminder"
+          message: "Has the dog had his medication today?"
+          data:
+            persistent: true
+            tag: "dog-medication"
+            actions:
+              - action: "DOG_MED_CONFIRM"
+                title: "✅ Done — I gave it"
+              - action: "DOG_MED_SNOOZE"
+                title: "⏰ Snooze 30 min"
+      # Notify Phone 2 (persistent + actionable)
+      - service: notify.mobile_app_PHONE_2_NAME
+        data:
+          title: "🐕 Dog Medication Reminder"
+          message: "Has the dog had his medication today?"
+          data:
+            persistent: true
+            tag: "dog-medication"
+            actions:
+              - action: "DOG_MED_CONFIRM"
+                title: "✅ Done — I gave it"
+              - action: "DOG_MED_SNOOZE"
+                title: "⏰ Snooze 30 min"
+
+  # 3) HANDLE "Done" response from either phone
+  - id: dog_med_handle_confirm
+    alias: "Dog Medication — Handle Confirmation"
+    trigger:
+      - platform: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: "DOG_MED_CONFIRM"
+    action:
+      # Mark as given
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.dog_medication_given
+      # Record who confirmed (pulls device name from the event)
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.dog_medication_confirmed_by
+        data:
+          value: "{{ trigger.event.data.device_id | default('Unknown') }}"
+      # Record when
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.dog_medication_confirmed_at
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+      # Clear persistent notifications on BOTH phones
+      - service: notify.mobile_app_PHONE_1_NAME
+        data:
+          message: "clear_notification"
+          data:
+            tag: "dog-medication"
+      - service: notify.mobile_app_PHONE_2_NAME
+        data:
+          message: "clear_notification"
+          data:
+            tag: "dog-medication"
+      # Send a confirmation to both
+      - service: notify.mobile_app_PHONE_1_NAME
+        data:
+          title: "✅ Dog Medication Done"
+          message: "Medication confirmed at {{ now().strftime('%-I:%M %p') }}"
+      - service: notify.mobile_app_PHONE_2_NAME
+        data:
+          title: "✅ Dog Medication Done"
+          message: "Medication confirmed at {{ now().strftime('%-I:%M %p') }}"
+
+  # 4) HANDLE snooze — re-sends in 30 minutes
+  - id: dog_med_handle_snooze
+    alias: "Dog Medication — Handle Snooze"
+    trigger:
+      - platform: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: "DOG_MED_SNOOZE"
+    action:
+      - delay: "00:30:00"
+      - condition: state
+        entity_id: input_boolean.dog_medication_given
+        state: "off"
+      # Re-notify both phones
+      - service: notify.mobile_app_PHONE_1_NAME
+        data:
+          title: "🐕 Dog Medication Reminder (Snoozed)"
+          message: "Reminder: Has the dog had his medication?"
+          data:
+            persistent: true
+            tag: "dog-medication"
+            actions:
+              - action: "DOG_MED_CONFIRM"
+                title: "✅ Done — I gave it"
+              - action: "DOG_MED_SNOOZE"
+                title: "⏰ Snooze 30 min"
+      - service: notify.mobile_app_PHONE_2_NAME
+        data:
+          title: "🐕 Dog Medication Reminder (Snoozed)"
+          message: "Reminder: Has the dog had his medication?"
+          data:
+            persistent: true
+            tag: "dog-medication"
+            actions:
+              - action: "DOG_MED_CONFIRM"
+                title: "✅ Done — I gave it"
+              - action: "DOG_MED_SNOOZE"
+                title: "⏰ Snooze 30 min"
+
+  # 5) EVENING ESCALATION — if still not done by 8pm
+  - id: dog_med_evening_escalation
+    alias: "Dog Medication — Evening Escalation"
+    trigger:
+      - platform: time
+        at: "20:00:00"
+    condition:
+      - condition: state
+        entity_id: input_boolean.dog_medication_given
+        state: "off"
+    action:
+      - service: notify.mobile_app_PHONE_1_NAME
+        data:
+          title: "⚠️ Dog Medication STILL Not Given!"
+          message: "It's 8 PM and meds haven't been confirmed yet."
+          data:
+            persistent: true
+            tag: "dog-medication"
+            actions:
+              - action: "DOG_MED_CONFIRM"
+                title: "✅ Done — I gave it"
+      - service: notify.mobile_app_PHONE_2_NAME
+        data:
+          title: "⚠️ Dog Medication STILL Not Given!"
+          message: "It's 8 PM and meds haven't been confirmed yet."
+          data:
+            persistent: true
+            tag: "dog-medication"
+            actions:
+              - action: "DOG_MED_CONFIRM"
+                title: "✅ Done — I gave it"
