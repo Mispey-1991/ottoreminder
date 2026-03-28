@@ -1,0 +1,17 @@
+{
+  "name": "dog-med-relay",
+  "version": "1.0.0",
+  "description": "HA WebSocket to Web Push relay for dog medication tracking",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "generate-vapid": "npx web-push generate-vapid-keys"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "web-push": "^3.6.7",
+    "ws": "^8.16.0",
+    "node-cron": "^3.0.3",
+    "dotenv": "^16.3.1"
+  }
+}
