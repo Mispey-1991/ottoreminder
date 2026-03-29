@@ -55,6 +55,8 @@ export default function App() {
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState(null);
   const [nameInput, setNameInput] = useState("");
+  const [drugConfig, setDrugConfig] = useState(null);
+  const [configSaving, setConfigSaving] = useState(false);
   const pollRef = useRef(null);
   const swRegRef = useRef(null);
 
@@ -89,11 +91,51 @@ export default function App() {
       }
     });
 
+    fetch("/api/drug-config")
+      .then((r) => r.json())
+      .then(setDrugConfig)
+      .catch(() => {});
+
     // Show setup if no name saved
     if (!userName) setShowSetup(true);
 
     return () => clearInterval(pollRef.current);
   }, [fetchStatus, userName]);
+
+  const handleSaveDrugConfig = async () => {
+    if (!drugConfig) return;
+    setConfigSaving(true);
+    try {
+      const resp = await fetch("/api/drug-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(drugConfig),
+      });
+      if (!resp.ok) {
+        const { error } = await resp.json();
+        setError(error || "Failed to save config");
+      }
+    } catch {
+      setError("Failed to save config");
+    }
+    setConfigSaving(false);
+  };
+
+  const updateDoseTime = (index, time) => {
+    setDrugConfig((c) => {
+      const doses = [...c.doses];
+      doses[index] = { time };
+      return { ...c, doses };
+    });
+  };
+
+  const addDose = () => {
+    setDrugConfig((c) => ({ ...c, doses: [...c.doses, { time: "08:00" }] }));
+  };
+
+  const removeDose = (index) => {
+    setDrugConfig((c) => ({ ...c, doses: c.doses.filter((_, i) => i !== index) }));
+  };
 
   const handleEnablePush = async () => {
     if (!swRegRef.current) return;
@@ -204,6 +246,43 @@ export default function App() {
             <p style={s.connStatus}>
               HA Connection: {status.haConnected ? "🟢 Connected" : "🔴 Disconnected"}
             </p>
+          )}
+
+          {drugConfig && (
+            <div style={s.doseSection}>
+              <label style={s.label}>Doses per Day</label>
+              {drugConfig.doses.map((dose, i) => (
+                <div key={i} style={s.doseRow}>
+                  <span style={s.doseLabel}>Dose {i + 1}</span>
+                  <input
+                    type="time"
+                    style={s.timeInput}
+                    value={dose.time}
+                    onChange={(e) => updateDoseTime(i, e.target.value)}
+                  />
+                  {drugConfig.doses.length > 1 && (
+                    <button style={s.removeBtn} onClick={() => removeDose(i)}>✕</button>
+                  )}
+                </div>
+              ))}
+              <button style={s.addDoseBtn} onClick={addDose}>+ Add Dose</button>
+
+              <label style={{ ...s.label, marginTop: 16 }}>Escalation Time</label>
+              <input
+                type="time"
+                style={s.timeInput}
+                value={drugConfig.escalationTime || ""}
+                onChange={(e) => setDrugConfig((c) => ({ ...c, escalationTime: e.target.value }))}
+              />
+
+              <button
+                style={{ ...s.saveBtn, marginTop: 16, opacity: configSaving ? 0.6 : 1 }}
+                onClick={handleSaveDrugConfig}
+                disabled={configSaving}
+              >
+                {configSaving ? "Saving..." : "Save Schedule"}
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -478,4 +557,37 @@ const s = {
   },
   streakNum: { fontFamily: "'Fraunces', serif", fontSize: 32, fontWeight: 800, color: "#c0845a" },
   streakLabel: { fontSize: 14, color: "rgba(240,230,216,0.4)" },
+  doseSection: { marginTop: 20 },
+  doseRow: { display: "flex", alignItems: "center", gap: 10, marginBottom: 8 },
+  doseLabel: { fontSize: 13, color: "rgba(240,230,216,0.5)", width: 52, flexShrink: 0 },
+  timeInput: {
+    flex: 1,
+    padding: "8px 10px",
+    background: "rgba(240,230,216,0.06)",
+    border: "1px solid rgba(240,230,216,0.12)",
+    borderRadius: 8,
+    color: "#f0e6d8",
+    fontSize: 14,
+    fontFamily: "'DM Sans', sans-serif",
+    outline: "none",
+  },
+  removeBtn: {
+    background: "none",
+    border: "none",
+    color: "rgba(240,230,216,0.35)",
+    fontSize: 14,
+    cursor: "pointer",
+    padding: "4px 6px",
+  },
+  addDoseBtn: {
+    marginTop: 4,
+    padding: "8px 16px",
+    background: "rgba(240,230,216,0.06)",
+    color: "rgba(240,230,216,0.6)",
+    border: "1px solid rgba(240,230,216,0.12)",
+    borderRadius: 8,
+    fontSize: 13,
+    cursor: "pointer",
+    fontFamily: "'DM Sans', sans-serif",
+  },
 };

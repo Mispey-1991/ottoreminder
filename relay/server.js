@@ -14,8 +14,9 @@ const {
   VAPID_PRIVATE_KEY,
   VAPID_EMAIL = "admin@example.com",
   PORT = 3000,
-  REMINDER_TIMES = "08:00,12:00,17:00",
-  ESCALATION_TIME = "20:00",
+  // Deprecated: use drug-config.json instead
+  REMINDER_TIMES,
+  ESCALATION_TIME,
 } = process.env;
 
 if (!HA_URL || !HA_TOKEN) {
@@ -33,6 +34,7 @@ webPush.setVapidDetails(`mailto:${VAPID_EMAIL}`, VAPID_PUBLIC_KEY, VAPID_PRIVATE
 // ── Subscription Storage ─────────────────────────────────
 const SUBS_FILE = path.join(__dirname, "data", "subscriptions.json");
 const HISTORY_FILE = path.join(__dirname, "data", "history.json");
+const DRUG_CONFIG_FILE = path.join(__dirname, "data", "drug-config.json");
 
 function loadJSON(filepath, fallback = []) {
   try {
@@ -54,6 +56,73 @@ function saveJSON(filepath, data) {
 
 let subscriptions = loadJSON(SUBS_FILE, []);
 let history = loadJSON(HISTORY_FILE, []);
+
+// ── Drug Config ──────────────────────────────────────
+const DEFAULT_DRUG_CONFIG = {
+  doses: [{ time: "08:00" }, { time: "12:00" }, { time: "17:00" }],
+  escalationTime: "20:00",
+};
+
+function loadDrugConfig() {
+  const saved = loadJSON(DRUG_CONFIG_FILE, null);
+  if (saved) return saved;
+  // Backward compat: migrate from deprecated env vars
+  if (REMINDER_TIMES) {
+    console.log("[Config] Migrating REMINDER_TIMES/ESCALATION_TIME env vars to drug-config.json");
+    const config = {
+      doses: REMINDER_TIMES.split(",").map((t) => ({ time: t.trim() })),
+      escalationTime: ESCALATION_TIME || "20:00",
+    };
+    saveJSON(DRUG_CONFIG_FILE, config);
+    return config;
+  }
+  return DEFAULT_DRUG_CONFIG;
+}
+
+let drugConfig = loadDrugConfig();
+let scheduledTasks = [];
+
+function scheduleCrons(config) {
+  scheduledTasks.forEach((t) => t.destroy());
+  scheduledTasks = [];
+
+  for (const dose of config.doses) {
+    const [hour, minute] = dose.time.split(":");
+    const expr = `${parseInt(minute)} ${parseInt(hour)} * * *`;
+    const task = cron.schedule(expr, () => {
+      if (!haState.given) {
+        console.log(`[Reminder] ${dose.time} — medication not given, sending push`);
+        sendPushToAll({
+          title: "🐕 Dog Medication Reminder",
+          body: "Has the dog had his medication today?",
+          tag: "dog-medication",
+          data: { type: "reminder", actions: ["confirm", "snooze"] },
+        });
+      } else {
+        console.log(`[Reminder] ${dose.time} — medication already given, skipping`);
+      }
+    });
+    scheduledTasks.push(task);
+    console.log(`[Cron] Reminder scheduled for ${dose.time}`);
+  }
+
+  if (config.escalationTime) {
+    const [eH, eM] = config.escalationTime.split(":");
+    const task = cron.schedule(`${parseInt(eM)} ${parseInt(eH)} * * *`, () => {
+      if (!haState.given) {
+        console.log("[Escalation] Evening — medication STILL not given");
+        sendPushToAll({
+          title: "⚠️ Dog Medication NOT Given!",
+          body: `It's ${config.escalationTime} and meds haven't been confirmed yet.`,
+          tag: "dog-medication",
+          data: { type: "escalation", actions: ["confirm"] },
+        });
+      }
+    });
+    scheduledTasks.push(task);
+    console.log(`[Cron] Escalation scheduled for ${config.escalationTime}`);
+  }
+}
 
 // ── HA State ─────────────────────────────────────────
 let haState = {
@@ -231,43 +300,7 @@ async function sendPushToAll(payload) {
 }
 
 // ── Scheduled Reminders ──────────────────────────────────
-const reminderTimes = REMINDER_TIMES.split(",").map((t) => t.trim());
-
-for (const time of reminderTimes) {
-  const [hour, minute] = time.split(":");
-  const cronExpr = `${parseInt(minute)} ${parseInt(hour)} * * *`;
-  cron.schedule(cronExpr, () => {
-    if (!haState.given) {
-      console.log(`[Reminder] ${time} — medication not given, sending push`);
-      sendPushToAll({
-        title: "🐕 Dog Medication Reminder",
-        body: "Has the dog had his medication today?",
-        tag: "dog-medication",
-        data: { type: "reminder", actions: ["confirm", "snooze"] },
-      });
-    } else {
-      console.log(`[Reminder] ${time} — medication already given, skipping`);
-    }
-  });
-  console.log(`[Cron] Reminder scheduled for ${time}`);
-}
-
-// Escalation
-if (ESCALATION_TIME) {
-  const [eH, eM] = ESCALATION_TIME.split(":");
-  cron.schedule(`${parseInt(eM)} ${parseInt(eH)} * * *`, () => {
-    if (!haState.given) {
-      console.log("[Escalation] Evening — medication STILL not given");
-      sendPushToAll({
-        title: "⚠️ Dog Medication NOT Given!",
-        body: `It's ${ESCALATION_TIME} and meds haven't been confirmed yet.`,
-        tag: "dog-medication",
-        data: { type: "escalation", actions: ["confirm"] },
-      });
-    }
-  });
-  console.log(`[Cron] Escalation scheduled for ${ESCALATION_TIME}`);
-}
+scheduleCrons(drugConfig);
 
 // ── Express Server ───────────────────────────────────────
 const app = express();
@@ -328,6 +361,29 @@ app.post("/api/push/unsubscribe", (req, res) => {
   const { endpoint } = req.body;
   subscriptions = subscriptions.filter((s) => s.subscription.endpoint !== endpoint);
   saveJSON(SUBS_FILE, subscriptions);
+  res.json({ ok: true });
+});
+
+// API: Get drug config
+app.get("/api/drug-config", (req, res) => {
+  res.json(drugConfig);
+});
+
+// API: Save drug config
+app.post("/api/drug-config", (req, res) => {
+  const { doses, escalationTime } = req.body;
+  if (!Array.isArray(doses) || doses.length === 0) {
+    return res.status(400).json({ error: "doses must be a non-empty array" });
+  }
+  for (const d of doses) {
+    if (!/^\d{2}:\d{2}$/.test(d.time)) {
+      return res.status(400).json({ error: `Invalid time format: ${d.time}` });
+    }
+  }
+  drugConfig = { doses, escalationTime: escalationTime || null };
+  saveJSON(DRUG_CONFIG_FILE, drugConfig);
+  scheduleCrons(drugConfig);
+  console.log("[Config] Drug config updated:", JSON.stringify(drugConfig));
   res.json({ ok: true });
 });
 
